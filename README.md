@@ -93,8 +93,8 @@ This repository demonstrates a solution where a robot reasons over a simulated 3
 
 *If you are looking for innovative, cross-disciplinary robotics talent—let’s talk!*
 
-[Your Name]  
-[Your Email/LinkedIn/GitHub]
+karthik navuluri  
+navulurikarthik2002@gmail.com
 
 ---
 
