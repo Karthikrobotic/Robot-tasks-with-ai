@@ -1,0 +1,156 @@
+import asyncio
+import websockets
+import json
+import time
+import requests
+
+# ——— GPT / OpenRouter Setup —————————————————————————————
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_HEADERS = {
+    "Authorization": f"Bearer sk.........(your api key)",  # your key
+    "Content-Type": "application/json",
+}
+MODEL_NAME = "mistralai/mistral-7b-instruct:free"
+
+def get_gpt_response(scene_desc: str) -> str:
+    """
+    Ask GPT to output exactly a JSON object named `scene_render_plan`.
+    """
+    prompt = (
+        "You are a robot.\n"
+        "Given this scene description, respond with a JSON object named \"scene_render_plan\".\n"
+        "The object MUST have a list called `steps`, each with a `step_id` and `parameters`.\n"
+        "Each `parameters` must include:\n"
+        "- end_effector_position: {X, Y, Z}\n"
+        "- end_effector_orientation_rx / ry / rz\n"
+        "- gripper_status closed and open, close is usied to grab the object and open is used to relised the gripper\n"
+        "Only respond with JSON. No explanations.\n\n"
+        f"{scene_desc}\n"
+        "do taskes one by one based on what user asked think your are the robot then user tell this what you can do syepbystep do that one\n\n"
+        "don't repet the steps.\n"
+        "final put the end effecter at home pojection0,0,0"
+    )
+
+    payload = {
+        "model": MODEL_NAME,
+        "messages": [
+            {"role": "system", "content": "You are a 3D visualization assistant. Only respond with a JSON object named 'scene_render_plan'."},
+            {"role": "user", "content": prompt}
+        ]
+    }
+    r = requests.post(
+        OPENROUTER_URL,
+        headers=OPENROUTER_HEADERS,
+        data=json.dumps(payload, ensure_ascii=True).encode("utf-8"),
+    )
+    if r.status_code == 200:
+        return r.json()["choices"][0]["message"]["content"]
+    else:
+        # bubble up the raw error text
+        return f"__GPT_ERROR__{r.status_code}__ {r.text}"
+
+def extract_json_block(text: str) -> str:
+    """
+    Find the first {...} block in text.
+    """
+    start = text.find("{")
+    end   = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return text[start:end+1]
+    return text  # fallback
+
+# ——— WebSocket Handler ——————————————————————————————————
+async def handler(websocket, path=None):
+    print(f"Client connected: {websocket.remote_address} (path={path})")
+    try:
+        scene_description = await websocket.recv()
+        print("Received scene_description:\n", scene_description)
+
+        # 1) Call GPT off the event loop
+        loop = asyncio.get_event_loop()
+        raw_gpt = await loop.run_in_executor(None, get_gpt_response, scene_description)
+
+        # 2) Extract only the JSON block
+        json_text = extract_json_block(raw_gpt)
+        print(json_text)
+        
+        # 3) Parse it
+        try:
+            parsed = json.loads(json_text)
+            plan = parsed["scene_render_plan"]
+
+            if isinstance(plan, list):  # list of steps directly
+                steps = plan
+                overall_gripper = "OPEN"
+            elif isinstance(plan, dict):  # nested in dictionary
+                steps = plan.get("steps", [])
+                overall_gripper = plan.get("gripper_state", "OPEN")
+            else:
+                raise ValueError("scene_render_plan must be a list or dict")
+
+        except Exception as e:
+            print("JSON parse error:", e)
+            await websocket.send(json.dumps({
+                "type": "error",
+                "message": f"Failed to parse GPT output: {e}"
+            }, ensure_ascii=True))
+            return
+
+        # 4) Send each step
+        for step in steps:
+            params = step.get("parameters", {})
+
+            pos = params.get("end_effector_position", {})
+            x = pos.get("X", 0.0)
+            y = pos.get("Y", 0.0)
+            z = pos.get("Z", 0.0)
+
+            rx = params.get("end_effector_orientation_rx", 0.0)
+            ry = params.get("end_effector_orientation_ry", 0.0)
+            rz = params.get("end_effector_orientation_rz", 0.0)
+
+            gripper = params.get("gripper_status", overall_gripper)
+
+            # First: send motion (no gripper)
+            msg_motion = {
+                "type":    "control_update",
+                "step_id": step.get("step_id"),
+                "x": x, "y": y, "z": z,
+                "rx": rx, "ry": ry, "rz": rz
+            }
+            print(msg_motion)
+            await websocket.send(json.dumps(msg_motion, ensure_ascii=True))
+            await asyncio.sleep(0.05)  # optional: delay to help the client process
+
+            # Second: send gripper update
+            msg_gripper = {
+                "type":    "gripper_update",
+                "step_id": step.get("step_id"),
+                "x": x, "y": y, "z": z,
+                "rx": rx, "ry": ry, "rz": rz,
+                "gripper": gripper
+            }
+            print(msg_gripper)
+            await websocket.send(json.dumps(msg_gripper, ensure_ascii=True))
+            await asyncio.sleep(1)
+
+
+        # 5) All done
+        await websocket.send(json.dumps({"type": "done"}, ensure_ascii=True))
+
+    except websockets.exceptions.ConnectionClosed:
+        print("Client disconnected")
+    except Exception as e:
+        print("Error in handler:", e)
+
+# ——— Server Startup ————————————————————————————————————
+async def main():
+    async with websockets.serve(handler, "localhost", 8765):
+        print("Server running on ws://localhost:8765")
+        await asyncio.Future()
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nServer stopped.")
