@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Workspace with WebSocket Control</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        #workspace-container {
+            width: 100%;
+            height: 80vh; 
+            background-color: #1a202c;
+            touch-action: none; 
+        }
+        canvas {
+            display: block;
+        }
+        .control-section {
+            background-color: rgba(255, 255, 255, 0.05);
+            padding: 1rem;
+            border-radius: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        .slider-container {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            width: 100%;
+        }
+        .slider {
+            -webkit-appearance: none;
+            width: 100%;
+            height: 8px;
+            border-radius: 5px;
+            background: #4a5568;
+            outline: none;
+            opacity: 0.7;
+            -webkit-transition: .2s;
+            transition: opacity .2s;
+        }
+        .slider:hover {
+            opacity: 1;
+        }
+        .slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #38b2ac;
+            cursor: pointer;
+        }
+        .slider::-moz-range-thumb {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #38b2ac;
+            cursor: pointer;
+        }
+    </style>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.128.0/examples/jsm/"
+        }
+    }
+    </script>
+</head>
+<body class="bg-gray-900 text-white flex flex-col items-center justify-center min-h-screen p-4">
+
+    <div class="w-full max-w-7xl bg-gray-800 rounded-lg shadow-xl p-6">
+        <h1 class="text-3xl font-bold text-center mb-4 text-cyan-400">3D Workspace & Object Controller</h1>
+        <p class="text-center text-gray-400 mb-6">The robot can now be controlled via WebSocket.</p>
+
+        <div class="flex flex-col md:flex-row gap-6">
+            <!-- Left Panel: Controls -->
+            <div class="w-full md:w-1/3 bg-gray-700/50 p-4 rounded-lg flex flex-col gap-4 overflow-y-auto" style="max-height: 80vh;">
+                <h2 class="text-xl font-bold text-teal-300 border-b border-gray-600 pb-2">Controls</h2>
+                
+                <!-- WebSocket Controls -->
+                <div class="control-section">
+                    <h3 class="text-lg font-semibold mb-2 text-gray-300">WebSocket Control</h3>
+                    <div id="ws-status" class="text-center font-bold p-2 rounded-md bg-red-500/20 text-red-300 transition-colors duration-300 mb-3">DISCONNECTED</div>
+                    <label for="user-input-text" class="block text-sm font-medium text-gray-300 mb-2">User Input for Server:</label>
+                    <textarea id="user-input-text" rows="3" class="w-full bg-gray-900 text-gray-300 text-sm p-2 rounded-md border border-gray-600 mb-3" placeholder="Enter your command or query here..."></textarea>
+                    <button id="ws-connect-btn" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition-colors duration-300">Connect & Send</button>
+                </div>
+
+                <!-- Gripper Control -->
+                <div class="control-section">
+                    <h3 class="text-lg font-semibold mb-2 text-gray-300">Gripper Control</h3>
+                    <div id="gripper-status" class="text-center font-bold p-2 rounded-md bg-gray-600/50 text-gray-300 transition-colors duration-300 mb-3">OPEN</div>
+                    <button id="toggle-gripper-btn" class="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-2 px-4 rounded-lg transition-colors duration-300">Toggle Gripper</button>
+                </div>
+
+                <!-- Robot Controls -->
+                <div class="control-section">
+                    <h3 class="text-lg font-semibold mb-3 text-gray-300">Robot Configuration</h3>
+                    <div class="grid grid-cols-1 gap-3">
+                        <div><label for="link1-length" class="block text-sm font-medium text-gray-400">Link Length</label><input type="number" id="link1-length" value="50" class="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg w-full p-2 mt-1"></div>
+                        <h4 class="text-md font-semibold mt-2 text-gray-400">Base Position (X, Y, Z)</h4>
+                        <div class="grid grid-cols-3 gap-2"><input type="number" id="base-x" value="0" class="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg p-2"><input type="number" id="base-y" value="10" class="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg p-2"><input type="number" id="base-z" value="0" class="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg p-2"></div>
+                        <button id="create-robot-btn" class="bg-teal-500 hover:bg-teal-600 text-white font-bold py-2 px-4 rounded-lg transition-colors duration-300 mt-2">Create/Update Robot</button>
+                    </div>
+                    <h4 class="text-md font-semibold mt-4 mb-2 text-gray-400">Base Inclination & Link Roll</h4>
+                    <div class="space-y-3">
+                        <div class="slider-container"><label for="base-rx" class="text-sm font-medium text-gray-400 w-16">Base Rx</label><input type="range" id="base-rx" min="-180" max="180" value="0" class="slider"><span id="base-rx-value" class="text-sm w-12 text-center">0°</span></div>
+                        <div class="slider-container"><label for="base-ry" class="text-sm font-medium text-gray-400 w-16">Base Ry</label><input type="range" id="base-ry" min="-180" max="180" value="0" class="slider"><span id="base-ry-value" class="text-sm w-12 text-center">0°</span></div>
+                        <div class="slider-container"><label for="base-rz" class="text-sm font-medium text-gray-400 w-16">Base Rz</label><input type="range" id="base-rz" min="-180" max="180" value="0" class="slider"><span id="base-rz-value" class="text-sm w-12 text-center">0°</span></div>
+                        <div class="slider-container"><label for="theta1" class="text-sm font-medium text-gray-400 w-16">Link Roll</label><input type="range" id="theta1" min="-180" max="180" value="0" class="slider"><span id="theta1-value" class="text-sm w-12 text-center">0°</span></div>
+                    </div>
+                </div>
+                
+                <!-- Object Creation Buttons -->
+                <div class="control-section">
+                    <h3 class="text-lg font-semibold mb-3 text-gray-300">Create Objects</h3>
+                    <div class="grid grid-cols-2 gap-2">
+                        <button id="create-bottle-btn" class="bg-indigo-500 hover:bg-indigo-600 text-white font-bold py-2 px-4 rounded-lg">Bottle</button>
+                        <button id="create-apple-btn" class="bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-lg">Apple</button>
+                        <button id="create-banana-btn" class="bg-yellow-500 hover:bg-yellow-600 text-black font-bold py-2 px-4 rounded-lg">Banana</button>
+                        <button id="create-bowl-btn" class="bg-orange-800 hover:bg-orange-900 text-white font-bold py-2 px-4 rounded-lg">Bowl</button>
+                    </div>
+                </div>
+
+                <!-- Object Controls will be dynamically shown here -->
+                <div id="object-controls-container"></div>
+
+                <!-- Scene Description Output -->
+                <div id="scene-description-container" class="control-section hidden">
+                    <h3 class="text-lg font-semibold mb-3 text-gray-300">Scene Description</h3>
+                    <textarea id="scene-description-output" rows="10" class="w-full bg-gray-900 text-gray-300 text-xs p-2 rounded-md border border-gray-600" readonly></textarea>
+                    <button id="copy-description-btn" class="w-full mt-2 bg-gray-600 hover:bg-gray-500 text-white font-bold py-2 px-4 rounded-lg">Copy to Clipboard</button>
+                </div>
+                <div class="flex flex-col gap-2">
+                    <button id="print-scene-btn" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg">Print Scene Description</button>
+                    <button id="reset-objects-btn" class="w-full bg-red-700 hover:bg-red-800 text-white font-bold py-2 px-4 rounded-lg">Reset Objects to Floor</button>
+                </div>
+
+            </div>
+
+            <!-- Right Panel: 3D view -->
+            <div class="w-full md:w-2/3">
+                <div id="workspace-container" class="rounded-lg overflow-hidden border-2 border-gray-700"></div>
+            </div>
+        </div>
+    </div>
+    
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        const container = document.getElementById('workspace-container');
+        let scene, camera, renderer, controls, gridHelper;
+        
+        let link1, joint1, endEffectorAxes;
+        
+        let grippableObject = null;
+        let gripperState = 'OPEN';
+        let websocket = null;
+
+        const endEffectorPoint = new THREE.Vector3();
+        let grippableObjects = [];
+
+        function init() {
+            initScene();
+            createWorkspace();
+            createRobot();
+            animate();
+            setupEventListeners();
+        }
+
+        function initScene() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x1a202c);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(container.clientWidth, container.clientHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.shadowMap.enabled = true;
+            container.appendChild(renderer.domElement);
+
+            camera = new THREE.PerspectiveCamera(50, container.clientWidth / container.clientHeight, 0.1, 2000);
+            camera.position.set(80, 60, 80);
+            camera.lookAt(0, 20, 0);
+
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(100, 100, 50);
+            directionalLight.castShadow = true;
+            scene.add(directionalLight);
+
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.target.set(0, 20, 0);
+
+            const axesHelper = new THREE.AxesHelper(1000);
+            scene.add(axesHelper);
+        }
+
+        function createWorkspace() {
+            if (gridHelper) scene.remove(gridHelper);
+            gridHelper = new THREE.GridHelper(100, 10);
+            scene.add(gridHelper);
+        }
+
+        function createRobot() {
+            if (joint1) scene.remove(joint1);
+            
+            const l1 = parseFloat(document.getElementById('link1-length').value);
+            const linkRadius = 2.5;
+            const jointRadius = 4;
+
+            const linkMaterial = new THREE.MeshStandardMaterial({ color: 0x00aaff });
+            const jointMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff });
+            
+            joint1 = new THREE.Mesh(new THREE.SphereGeometry(jointRadius, 32, 32), jointMaterial);
+            scene.add(joint1);
+
+            link1 = new THREE.Mesh(new THREE.CylinderGeometry(linkRadius, linkRadius, l1, 32), linkMaterial);
+            link1.position.y = l1 / 2;
+            joint1.add(link1);
+            
+            endEffectorAxes = new THREE.AxesHelper(15);
+            endEffectorAxes.position.y = l1 / 2;
+            link1.add(endEffectorAxes);
+            
+            updateRobotPose();
+        }
+
+        function addControls(name, color, sliders) {
+            const controlsContainer = document.getElementById('object-controls-container');
+            let controls = document.getElementById(`${name}-controls`);
+            if(!controls) {
+                let sliderHTML = '';
+                for (const slider of sliders) {
+                    sliderHTML += `
+                        <div class="slider-container">
+                            <label class="text-sm w-16">${slider.label}</label>
+                            <input type="range" id="${name}-${slider.id}" min="${slider.min}" max="${slider.max}" value="${slider.value}" step="${slider.step}" class="slider">
+                            <span id="${name}-${slider.id}-value" class="text-sm w-12 text-center">${slider.value}${slider.unit}</span>
+                        </div>`;
+                }
+
+                const controlsHTML = `
+                <div id="${name}-controls" class="control-section">
+                    <h3 class="text-lg font-semibold mb-3" style="color:${color}">${name.charAt(0).toUpperCase() + name.slice(1)}</h3>
+                    <div class="space-y-3 mt-2">${sliderHTML}</div>
+                </div>`;
+                controlsContainer.insertAdjacentHTML('beforeend', controlsHTML);
+                sliders.forEach(s => document.getElementById(`${name}-${s.id}`).addEventListener('input', () => updateObjectPose(grippableObjects.find(o=>o.name===name), name)));
+            }
+        }
+
+        function createWaterBottle() {
+            const name = 'bottle';
+            const existingObj = grippableObjects.find(o => o.name === name);
+            if(existingObj) scene.remove(existingObj);
+            grippableObjects = grippableObjects.filter(o => o.name !== name);
+            
+            addControls(name, '#60a5fa', [
+                {id: 'scale', label: 'Scale', min: 0.1, max: 3, value: 1, step: 0.1, unit: 'x'},
+                {id: 'x', label: 'Pos X', min: -50, max: 50, value: 25, step: 1, unit: ''},
+                {id: 'y', label: 'Pos Y', min: 0, max: 100, value: 10, step: 1, unit: ''},
+                {id: 'z', label: 'Pos Z', min: -50, max: 50, value: 0, step: 1, unit: ''},
+                {id: 'rx', label: 'Rot Rx', min: -180, max: 180, value: 0, step: 1, unit: '°'},
+                {id: 'ry', label: 'Rot Ry', min: -180, max: 180, value: 0, step: 1, unit: '°'},
+                {id: 'rz', label: 'Rot Rz', min: -180, max: 180, value: 0, step: 1, unit: '°'},
+            ]);
+            
+            const group = new THREE.Group();
+            group.name = name;
+            const bodyHeight = 18, bodyRadius = 4, neckHeight = 3, neckRadius = 2, capHeight = 2, capRadius = 2.2;
+            const bodyMaterial = new THREE.MeshStandardMaterial({ color: 0xadd8e6, transparent: true, opacity: 0.7 });
+            const capMaterial = new THREE.MeshStandardMaterial({ color: 0x4444ff });
+            const body = new THREE.Mesh(new THREE.CylinderGeometry(bodyRadius, bodyRadius, bodyHeight, 32), bodyMaterial);
+            const neck = new THREE.Mesh(new THREE.CylinderGeometry(neckRadius, bodyRadius, neckHeight, 32), bodyMaterial);
+            neck.position.y = bodyHeight / 2 + neckHeight / 2;
+            const cap = new THREE.Mesh(new THREE.CylinderGeometry(capRadius, capRadius, capHeight, 32), capMaterial);
+            cap.position.y = bodyHeight / 2 + neckHeight + capHeight / 2;
+            group.add(body, neck, cap);
+            group.add(new THREE.AxesHelper(10));
+            scene.add(group);
+            
+            grippableObjects.push(group);
+            updateObjectPose(group, name);
+        }
+
+        function createApple() {
+            const name = 'apple';
+            const existingObj = grippableObjects.find(o => o.name === name);
+            if(existingObj) scene.remove(existingObj);
+            grippableObjects = grippableObjects.filter(o => o.name !== name);
+
+            addControls(name, '#f87171', [
+                {id: 'scale', label: 'Scale', min: 0.1, max: 5, value: 1, step: 0.1, unit: 'x'},
+                {id: 'x', label: 'Pos X', min: -50, max: 50, value: -20, step: 1, unit: ''},
+                {id: 'y', label: 'Pos Y', min: 0, max: 100, value: 5, step: 1, unit: ''},
+                {id: 'z', label: 'Pos Z', min: -50, max: 50, value: 20, step: 1, unit: ''},
+                {id: 'rx', label: 'Rot Rx', min: -180, max: 180, value: 0, step: 1, unit: '°'},
+                {id: 'ry', label: 'Rot Ry', min: -180, max: 180, value: 0, step: 1, unit: '°'},
+                {id: 'rz', label: 'Rot Rz', min: -180, max: 180, value: 0, step: 1, unit: '°'},
+            ]);
+
+            const group = new THREE.Group();
+            group.name = name;
+            const appleMaterial = new THREE.MeshStandardMaterial({ color: 0xff0000 });
+            const stemMaterial = new THREE.MeshStandardMaterial({ color: 0x006400 });
+            const appleBody = new THREE.Mesh(new THREE.SphereGeometry(4, 32, 32), appleMaterial);
+            const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 2, 8), stemMaterial);
+            stem.position.y = 4;
+            group.add(appleBody, stem);
+            scene.add(group);
+
+            grippableObjects.push(group);
+            updateObjectPose(group, name);
+        }
+
+        function createBanana() {
+            const name = 'banana';
+            const existingObj = grippableObjects.find(o => o.name === name);
+            if(existingObj) scene.remove(existingObj);
+            grippableObjects = grippableObjects.filter(o => o.name !== name);
+
+            addControls(name, '#facc15', [
+                {id: 'scale', label: 'Scale', min: 0.1, max: 5, value: 1, step: 0.1, unit: 'x'},
+                {id: 'x', label: 'Pos X', min: -50, max: 50, value: 0, step: 1, unit: ''},
+                {id: 'y', label: 'Pos Y', min: 0, max: 100, value: 5, step: 1, unit: ''},
+                {id: 'z', label: 'Pos Z', min: -50, max: 50, value: -25, step: 1, unit: ''},
+                {id: 'rx', label: 'Rot Rx', min: -180, max: 180, value: 0, step: 1, unit: '°'},
+                {id: 'ry', label: 'Rot Ry', min: -180, max: 180, value: 0, step: 1, unit: '°'},
+                {id: 'rz', label: 'Rot Rz', min: -180, max: 180, value: 0, step: 1, unit: '°'},
+            ]);
+
+            const bananaMaterial = new THREE.MeshStandardMaterial({ color: 0xffff00 });
+            const curve = new THREE.CatmullRomCurve3([
+                new THREE.Vector3(-8, 0, 0), new THREE.Vector3(-5, 4, 0),
+                new THREE.Vector3(0, 5, 0), new THREE.Vector3(5, 4, 0),
+                new THREE.Vector3(8, 0, 0)
+            ]);
+            const geometry = new THREE.TubeGeometry(curve, 20, 1.5, 8, false);
+            const mesh = new THREE.Mesh(geometry, bananaMaterial);
+            mesh.name = name;
+            scene.add(mesh);
+
+            grippableObjects.push(mesh);
+            updateObjectPose(mesh, name);
+        }
+
+        function createBowl() {
+            const name = 'bowl';
+            const existingObj = grippableObjects.find(o => o.name === name);
+            if(existingObj) scene.remove(existingObj);
+            grippableObjects = grippableObjects.filter(o => o.name !== name);
+            
+            addControls(name, '#fb923c', [
+                {id: 'scale', label: 'Scale', min: 0.1, max: 5, value: 1, step: 0.1, unit: 'x'},
+                {id: 'x', label: 'Pos X', min: -50, max: 50, value: 20, step: 1, unit: ''},
+                {id: 'y', label: 'Pos Y', min: 0, max: 100, value: 0, step: 1, unit: ''},
+                {id: 'z', label: 'Pos Z', min: -50, max: 50, value: -20, step: 1, unit: ''},
+                {id: 'rx', label: 'Rot Rx', min: -180, max: 180, value: 0, step: 1, unit: '°'},
+                {id: 'ry', label: 'Rot Ry', min: -180, max: 180, value: 0, step: 1, unit: '°'},
+                {id: 'rz', label: 'Rot Rz', min: -180, max: 180, value: 0, step: 1, unit: '°'},
+            ]);
+
+            const points = [];
+            for (let i = 0; i < 10; i++) {
+                points.push(new THREE.Vector2(Math.sin(i * 0.2) * 10 + 5, (i - 5) * 2));
+            }
+            const geometry = new THREE.LatheGeometry(points);
+            const material = new THREE.MeshStandardMaterial({ color: 0x8B4513, side: THREE.DoubleSide });
+            const mesh = new THREE.Mesh(geometry, material);
+            mesh.name = name;
+            scene.add(mesh);
+            
+            grippableObjects.push(mesh);
+            updateObjectPose(mesh, name);
+        }
+
+        function updateRobotPose() {
+            if (!joint1) return;
+            const baseX = parseFloat(document.getElementById('base-x').value);
+            const baseY = parseFloat(document.getElementById('base-y').value);
+            const baseZ = parseFloat(document.getElementById('base-z').value);
+            joint1.position.set(baseX, baseY, baseZ);
+
+            const baseRx = THREE.MathUtils.degToRad(document.getElementById('base-rx').value);
+            const baseRy = THREE.MathUtils.degToRad(document.getElementById('base-ry').value);
+            const baseRz = THREE.MathUtils.degToRad(document.getElementById('base-rz').value);
+            joint1.rotation.set(baseRx, baseRy, baseRz);
+            
+            const theta1 = THREE.MathUtils.degToRad(document.getElementById('theta1').value);
+            link1.rotation.y = theta1;
+
+            document.getElementById('base-rx-value').textContent = `${Math.round(joint1.rotation.x * 180 / Math.PI)}°`;
+            document.getElementById('base-ry-value').textContent = `${Math.round(joint1.rotation.y * 180 / Math.PI)}°`;
+            document.getElementById('base-rz-value').textContent = `${Math.round(joint1.rotation.z * 180 / Math.PI)}°`;
+            document.getElementById('theta1-value').textContent = `${Math.round(link1.rotation.y * 180 / Math.PI)}°`;
+        }
+
+        function updateObjectPose(obj, prefix) {
+            if (!obj || (gripperState === 'CLOSED' && grippableObject === obj)) return;
+            const scale = parseFloat(document.getElementById(`${prefix}-scale`).value);
+            obj.scale.set(scale, scale, scale);
+            document.getElementById(`${prefix}-scale-value`).textContent = `${scale.toFixed(1)}x`;
+
+            const posX = parseFloat(document.getElementById(`${prefix}-x`).value);
+            const posY = parseFloat(document.getElementById(`${prefix}-y`).value);
+            const posZ = parseFloat(document.getElementById(`${prefix}-z`).value);
+            obj.position.set(posX, posY, posZ);
+            
+            const rotX = THREE.MathUtils.degToRad(document.getElementById(`${prefix}-rx`)?.value || 0);
+            const rotY = THREE.MathUtils.degToRad(document.getElementById(`${prefix}-ry`)?.value || 0);
+            const rotZ = THREE.MathUtils.degToRad(document.getElementById(`${prefix}-rz`)?.value || 0);
+            obj.rotation.set(rotX, rotY, rotZ);
+
+            document.getElementById(`${prefix}-x-value`).textContent = posX;
+            document.getElementById(`${prefix}-y-value`).textContent = posY;
+            document.getElementById(`${prefix}-z-value`).textContent = posZ;
+            if(document.getElementById(`${prefix}-rx-value`)) document.getElementById(`${prefix}-rx-value`).textContent = `${Math.round(rotX * 180 / Math.PI)}°`;
+            if(document.getElementById(`${prefix}-ry-value`)) document.getElementById(`${prefix}-ry-value`).textContent = `${Math.round(rotY * 180 / Math.PI)}°`;
+            if(document.getElementById(`${prefix}-rz-value`)) document.getElementById(`${prefix}-rz-value`).textContent = `${Math.round(rotZ * 180 / Math.PI)}°`;
+        }
+        
+        const updateWaterBottlePose = () => updateObjectPose(grippableObjects.find(o=>o.name==='bottle'), 'bottle');
+        const updateApplePose = () => updateObjectPose(grippableObjects.find(o=>o.name==='apple'), 'apple');
+        const updateBananaPose = () => updateObjectPose(grippableObjects.find(o=>o.name==='banana'), 'banana');
+        const updateBowlPose = () => updateObjectPose(grippableObjects.find(o=>o.name==='bowl'), 'bowl');
+
+        function toggleGripper() {
+            if (gripperState === 'OPEN') {
+                if (grippableObject) {
+                    gripperState = 'CLOSED';
+                    endEffectorAxes.attach(grippableObject);
+                }
+            } else { 
+                gripperState = 'OPEN';
+                if (grippableObject) {
+                    const worldPos = new THREE.Vector3();
+                    const worldQuat = new THREE.Quaternion();
+                    grippableObject.getWorldPosition(worldPos);
+                    grippableObject.getWorldQuaternion(worldQuat);
+                    
+                    scene.attach(grippableObject);
+                    grippableObject.position.copy(worldPos);
+                    grippableObject.quaternion.copy(worldQuat);
+                    grippableObject = null;
+                }
+            }
+        }
+
+        function checkCollision() {
+            if (!endEffectorAxes || gripperState === 'CLOSED') {
+                return;
+            }
+            
+            scene.updateMatrixWorld(true);
+            endEffectorAxes.getWorldPosition(endEffectorPoint);
+
+            let objectToGrip = null;
+            let minDistance = Infinity;
+
+            for (const obj of grippableObjects) {
+                if(obj) {
+                    const objBox = new THREE.Box3().setFromObject(obj);
+                    if (objBox.containsPoint(endEffectorPoint)) {
+                        const distance = endEffectorPoint.distanceTo(obj.position);
+                        if(distance < minDistance) {
+                           minDistance = distance;
+                           objectToGrip = obj;
+                        }
+                    }
+                }
+            }
+            grippableObject = objectToGrip;
+        }
+
+        function getObjectDetails(obj) {
+            const box = new THREE.Box3().setFromObject(obj);
+            const size = new THREE.Vector3();
+            box.getSize(size);
+            let description = `Object: ${obj.name.charAt(0).toUpperCase() + obj.name.slice(1)}\n`;
+            
+            switch(obj.name) {
+                case 'bottle':
+                    description += `  - Appearance: A semi-transparent light blue bottle with a darker blue cap.\n`;
+                    break;
+                case 'apple':
+                     description += `  - Appearance: A red, spherical apple with a green stem on top.\n`;
+                    break;
+                case 'banana':
+                     description += `  - Appearance: A yellow, curved banana.\n`;
+                    break;
+                case 'bowl':
+                     description += `  - Appearance: A brown, wide-mouthed bowl, created from a lathe.\n`;
+                    break;
+            }
+
+            description += `  - Dimensions: (Width: ${size.x.toFixed(2)}, Height: ${size.y.toFixed(2)}, Depth: ${size.z.toFixed(2)})\n`;
+            description += `  - Position: (X: ${obj.position.x.toFixed(2)}, Y: ${obj.position.y.toFixed(2)}, Z: ${obj.position.z.toFixed(2)})\n`;
+            description += `  - Rotation: (Rx: ${(obj.rotation.x * 180 / Math.PI).toFixed(2)}°, Ry: ${(obj.rotation.y * 180 / Math.PI).toFixed(2)}°, Rz: ${(obj.rotation.z * 180 / Math.PI).toFixed(2)}°)\n`;
+            return description;
+        }
+
+        function getSceneDescription() {
+            let description = "== SCENE DESCRIPTION ==\n\n";
+            description += "--- ROBOT ---\n";
+            description += `A single-link robot with a white spherical base and a blue cylindrical arm.\n`;
+            
+            const endEffectorWorldPos = new THREE.Vector3();
+            const endEffectorWorldQuat = new THREE.Quaternion();
+            const endEffectorEuler = new THREE.Euler();
+            
+            if (endEffectorAxes) {
+                endEffectorAxes.getWorldPosition(endEffectorWorldPos);
+                endEffectorAxes.getWorldQuaternion(endEffectorWorldQuat);
+                endEffectorEuler.setFromQuaternion(endEffectorWorldQuat, 'XYZ');
+            }
+
+            description += `End-Effector Position: (X: ${endEffectorWorldPos.x.toFixed(2)}, Y: ${endEffectorWorldPos.y.toFixed(2)}, Z: ${endEffectorWorldPos.z.toFixed(2)})\n`;
+            description += `End-Effector Orientation: (Rx: ${(endEffectorEuler.x * 180 / Math.PI).toFixed(2)}°, Ry: ${(endEffectorEuler.y * 180 / Math.PI).toFixed(2)}°, Rz: ${(endEffectorEuler.z * 180 / Math.PI).toFixed(2)}°)\n\n`;
+            
+            description += "--- OBJECTS ---\n";
+            if (grippableObjects.length === 0) {
+                description += "No objects in the scene.\n";
+            } else {
+                grippableObjects.forEach(obj => {
+                    if (obj && obj !== grippableObject) { 
+                       description += getObjectDetails(obj) + "\n";
+                    }
+                });
+            }
+
+            description += "--- GRIPPER ---\n";
+            description += `Status: ${gripperState}\n`;
+            if (gripperState === 'CLOSED' && grippableObject) {
+                description += `Holding: ${grippableObject.name}\n`;
+                description += getObjectDetails(grippableObject);
+            }
+
+            const userInput = document.getElementById('user-input-text').value;
+            if (userInput.trim() !== '') {
+                description += "\n--- USER INPUT ---\n";
+                description += userInput + "\n";
+            }
+
+            return description;
+        }
+
+        function printSceneDescription() {
+            const description = getSceneDescription();
+            const outputContainer = document.getElementById('scene-description-container');
+            const outputTextarea = document.getElementById('scene-description-output');
+            outputTextarea.value = description;
+            outputContainer.classList.remove('hidden');
+        }
+
+        function copyDescription() {
+            const textarea = document.getElementById('scene-description-output');
+            textarea.select();
+            document.execCommand('copy');
+        }
+
+        function resetObjects() {
+            if (gripperState === 'CLOSED' && grippableObject) {
+                toggleGripper();
+            }
+
+            const box = new THREE.Box3();
+            const size = new THREE.Vector3();
+
+            grippableObjects.forEach(obj => {
+                if (obj) {
+                    box.setFromObject(obj);
+                    box.getSize(size);
+                    const newY = size.y / 2;
+                    
+                    obj.position.y = newY;
+                    obj.rotation.set(0, 0, 0);
+
+                    const prefix = obj.name;
+                    const ySlider = document.getElementById(`${prefix}-y`);
+                    if (ySlider) {
+                        ySlider.value = newY;
+                        document.getElementById(`${prefix}-y-value`).textContent = newY.toFixed(0);
+                    }
+                    ['rx', 'ry', 'rz'].forEach(axis => {
+                        const rotSlider = document.getElementById(`${prefix}-${axis}`);
+                        if (rotSlider) {
+                            rotSlider.value = 0;
+                            document.getElementById(`${prefix}-${axis}-value`).textContent = '0°';
+                        }
+                    });
+                }
+            });
+        }
+
+        function connectWebSocket() {
+            const wsStatusDiv = document.getElementById('ws-status');
+            const wsConnectBtn = document.getElementById('ws-connect-btn');
+
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                websocket.close();
+                return;
+            }
+            
+            wsStatusDiv.textContent = 'CONNECTING...';
+            wsStatusDiv.className = 'text-center font-bold p-2 rounded-md bg-yellow-500/20 text-yellow-300 transition-colors duration-300 mb-3';
+            wsStatusDiv.title = '';
+
+            websocket = new WebSocket('ws://localhost:8765');
+
+            websocket.onopen = () => {
+                console.log('Connected to WebSocket server');
+                wsStatusDiv.textContent = 'CONNECTED';
+                wsStatusDiv.className = 'text-center font-bold p-2 rounded-md bg-green-500/20 text-green-300 transition-colors duration-300 mb-3';
+                wsConnectBtn.textContent = 'Disconnect';
+                
+                // Send the initial scene description
+                const description = getSceneDescription();
+                websocket.send(description);
+            };
+
+            websocket.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    
+                    document.getElementById('base-x').value = data.x;
+                    document.getElementById('base-y').value = data.y;
+                    document.getElementById('base-z').value = data.z;
+                    document.getElementById('base-rx').value = data.rx;
+                    document.getElementById('base-ry').value = data.ry;
+                    document.getElementById('base-rz').value = data.rz;
+                    
+                    updateRobotPose();
+
+                    if (data.gripper && data.gripper !== gripperState) {
+                        toggleGripper();
+                    }
+                } catch (e) {
+                    console.error("Failed to parse incoming WebSocket data:", e);
+                }
+            };
+
+            websocket.onclose = () => {
+                console.log('Disconnected from WebSocket server');
+                if (wsStatusDiv.textContent === 'CONNECTED' || wsStatusDiv.textContent === 'CONNECTING...') {
+                    wsStatusDiv.textContent = 'DISCONNECTED';
+                }
+                wsStatusDiv.className = 'text-center font-bold p-2 rounded-md bg-red-500/20 text-red-300 transition-colors duration-300 mb-3';
+                wsConnectBtn.textContent = 'Connect & Send';
+                websocket = null;
+            };
+
+            websocket.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                wsStatusDiv.textContent = 'CONNECTION FAILED';
+                wsStatusDiv.title = 'Could not connect. Please ensure the Python server script is running on ws://localhost:8765.';
+            };
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            if (!websocket) { 
+                updateRobotPose();
+            }
+            checkCollision();
+            
+            const statusDiv = document.getElementById('gripper-status');
+            if (gripperState === 'CLOSED') {
+                statusDiv.textContent = `CLOSED (Holding ${grippableObject?.name || ''})`;
+                statusDiv.className = 'text-center font-bold p-2 rounded-md bg-red-500/20 text-red-300';
+            } else if (grippableObject) {
+                 statusDiv.textContent = `Ready to Grip ${grippableObject.name}`;
+                 statusDiv.className = 'text-center font-bold p-2 rounded-md bg-yellow-500/20 text-yellow-300';
+            } else {
+                statusDiv.textContent = 'OPEN';
+                statusDiv.className = 'text-center font-bold p-2 rounded-md bg-green-500/20 text-green-300';
+            }
+
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        function setupEventListeners() {
+            document.getElementById('create-robot-btn').addEventListener('click', createRobot);
+            document.getElementById('create-bottle-btn').addEventListener('click', createWaterBottle);
+            document.getElementById('create-apple-btn').addEventListener('click', createApple);
+            document.getElementById('create-banana-btn').addEventListener('click', createBanana);
+            document.getElementById('create-bowl-btn').addEventListener('click', createBowl);
+            document.getElementById('toggle-gripper-btn').addEventListener('click', toggleGripper);
+            document.getElementById('print-scene-btn').addEventListener('click', printSceneDescription);
+            document.getElementById('reset-objects-btn').addEventListener('click', resetObjects);
+            document.getElementById('ws-connect-btn').addEventListener('click', connectWebSocket);
+            
+            document.getElementById('copy-description-btn').addEventListener('click', copyDescription);
+            
+            const robotInputs = ['base-x', 'base-y', 'base-z', 'base-rx', 'base-ry', 'base-rz', 'theta1', 'link1-length'];
+            robotInputs.forEach(id => document.getElementById(id).addEventListener('input', updateRobotPose));
+        }
+
+        init();
+
+    </script>
+</body>
+</html>
